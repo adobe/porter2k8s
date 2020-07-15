@@ -124,53 +124,56 @@ k8s
 ├── ingress-prod.yaml
 |── deployment-dev.yaml
 └── servicecatalog-azure.yaml
-.porter
-└── operation_data
-    ├── base-secrets.yaml
-    ├── dev
-    │   ├── ap-south-1
-    │   │   └── secrets.yaml
-    │   ├── eu-central-1
-    │   │   └── secrets.yaml
-    │   ├── secrets.yaml
-    │   ├── us-east-1
-    │   │   └── secrets.yaml
-    │   └── va7
-    │       └── secrets.yaml
-    ├── prod
-    │   ├── ap-northeast-1
-    │   │   └── secrets.yaml
-    │   ├── ap-south-1
-    │   │   └── secrets.yaml
-    │   ├── ap-southeast-2
-    │   │   └── secrets.yaml
-    │   ├── eu-central-1
-    │   │   └── secrets.yaml
-    │   ├── eu-west-1
-    │   │   └── secrets.yaml
-    │   ├── secrets.yaml
-    │   ├── us-east-1
-    │   │   └── secrets.yaml
-    │   ├── us-west-2
-    │   │   └── secrets.yaml
-    │   └── va7
-    │       └── secrets.yaml
-    └── stage
-        ├── ap-northeast-1
-        │   └── secrets.yaml
-        ├── ap-south-1
-        │   └── secrets.yaml
-        ├── ap-southeast-2
-        │   └── secrets.yaml
-        ├── eu-central-1
-        │   └── secrets.yaml
-        ├── eu-west-1
-        │   └── secrets.yaml
-        ├── secrets.yaml
-        ├── us-east-1
-        │   └── secrets.yaml
-        ├── us-west-2
-        │   └── secrets.yaml
-        └── va7
-            └── secrets.yaml
+environment
+├── aws-environment.yaml
+├── azure-environment.yaml
+├── base-environment.yaml
+├── dev
+│   ├── environment.yaml
+│   ├── eu-central-1
+│   │   └── environment.yaml
+│   ├── nld2
+│   │   └── environment.yaml
+│   └── us-east-1
+│       └── environment.yaml
+├── prod
+│   ├── ap-northeast-1
+│   │   └── environment.yaml
+│   ├── ap-south-1
+│   │   └── environment.yaml
+│   ├── ap-southeast-2
+│   │   └── environment.yaml
+│   ├── environment.yaml
+│   ├── eu-central-1
+│   │   └── environment.yaml
+│   ├── eu-west-1
+│   │   └── environment.yaml
+│   ├── nld2
+│   │   └── environment.yaml
+│   ├── us-east-1
+│   │   └── environment.yaml
+│   ├── us-west-2
+│   │   └── environment.yaml
+│   └── va7
+│       └── environment.yaml
+└── stage
+    ├── ap-northeast-1
+    │   └── environment.yaml
+    ├── ap-south-1
+    │   └── environment.yaml
+    ├── ap-southeast-2
+    │   └── environment.yaml
+    ├── environment.yaml
+    ├── eu-central-1
+    │   └── environment.yaml
+    ├── eu-west-1
+    │   └── environment.yaml
+    ├── nld2
+    │   └── environment.yaml
+    ├── us-east-1
+    │   └── environment.yaml
+    ├── us-west-2
+    │   └── environment.yaml
+    └── va7
+        └── environment.yaml
 ```
