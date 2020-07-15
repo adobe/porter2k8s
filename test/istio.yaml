@@ -1,0 +1,45 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: mobile-sig-capture-gateway
+spec:
+  selector:
+    istio: ingressgateway # use istio default controller
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - mobilesigcapture.uswest2.micro.echosignpreview.com
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - mobilesigcapture.uswest2.micro.echosignpreview.com
+    tls:
+      mode: SIMPLE
+      privateKey: /etc/istio/ingressgateway-certs/tls.key
+      serverCertificate: /etc/istio/ingressgateway-certs/tls.crt
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: mobile-sig-capture
+spec:
+  hosts:
+  - mobilesigcapture.uswest2.micro.echosignpreview.com
+  gateways:
+  - mobile-sig-capture-gateway
+  http:
+    - timeout: 15s
+      route:
+      - destination:
+          host: mobile-sig-capture
+          port:
+            number: 80
+      retries:
+        attempts: 3
+        perTryTimeout: 10s # Timeout for receiving response headers on retry.
+

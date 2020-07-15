@@ -1,0 +1,31 @@
+---
+base_path: /
+type: host
+vars:
+  - path: not_relevant
+    field: irrelevant_field
+    name: irrelevant_name
+
+  - name: BUG
+    value: Bug
+
+---
+base_path: /
+type: container
+vars:
+  - path: aws_secret_path
+    field: aws_field
+    name: AWS_SECRET
+
+  - name: AWS_ENV
+    value: aws_environment_variable
+
+---
+base_path: /irrelevant
+type: porter2k8s
+vars:
+  - name: ENVIRONMENT
+    value: should_be_overriden
+
+  - name: REGION
+    value: westphalia

@@ -1,0 +1,5 @@
+clusters:
+  - path: "secret/test/test/kubeconfig-1.yaml"
+    context: "us-east-1"
+  - path: "30-secret/test_test/k-2#(3.yaml"
+    context: "other-region"

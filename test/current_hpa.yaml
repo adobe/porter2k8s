@@ -1,0 +1,21 @@
+---
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: &name laertes
+  labels:
+    app: *name
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: *name
+  minReplicas: 2 # Don't set this value lower than 2. Just in case, a value less than 2 will be overridden to 2 in prod.
+  maxReplicas: 10
+  metrics:
+  - resource:
+      name: cpu
+      target:
+        averageUtilization: 70
+        type: Utilization
+    type: Resource

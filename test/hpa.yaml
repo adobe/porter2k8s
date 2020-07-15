@@ -1,0 +1,61 @@
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: before
+  namespace: test
+  labels:
+    app: &name testapp
+  annotations:
+    metric-config.object.test-istio-requests-total.prometheus/per-replica: "true"
+    metric-config.object.test-istio-requests-total.prometheus/query: |
+      sum(rate(istio_requests_total{destination_app="testapp"}[1m]))/sum(rate(istio_requests_total{destination_app="testapp"}[5m]))/count(kube_pod_container_status_ready{container="testapp"})
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: *name
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Object
+    object:
+      metric:
+        name: test-istio-requests-total
+      describedObject:
+        apiVersion: v1
+        kind: Pod
+        name: testapp
+      target:
+        type: Value
+        value: 1
+---
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: after
+  namespace: test
+  labels:
+    app: &name testapp
+  annotations:
+    metric-config.object.test-istio-requests-total.prometheus/per-replica: "true"
+    metric-config.object.test-istio-requests-total.prometheus/query: |
+      sum(rate(istio_requests_total{destination_app="testapp"}[1m]))/sum(rate(istio_requests_total{destination_app="testapp"}[5m]))/count(kube_pod_container_status_ready{container="testapp"})
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: *name
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Object
+    object:
+      metric:
+        name: test-istio-requests-total
+      describedObject:
+        apiVersion: v1
+        kind: Pod
+        name: testapp
+      target:
+        type: Value
+        value: 10

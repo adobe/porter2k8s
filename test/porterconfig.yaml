@@ -1,0 +1,22 @@
+--- # first document defines the bundle
+bundle: dev-ue1
+includes:
+  - ./porterconfig_base.yaml
+  - ./porterconfig_aws.yaml
+
+---
+# Porter Config
+group: 1
+base_path: /test_base
+packages:
+  container:
+
+    - name: ENV_TEST
+      value: environment value
+
+    - path: test_path
+      field: Password
+      name: SECRET_TEST
+
+    - name: NO_VAL
+      value: ""

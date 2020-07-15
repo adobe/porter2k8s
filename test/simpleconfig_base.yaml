@@ -1,0 +1,23 @@
+---
+base_path: /
+type: something
+vars:
+
+  - path: different_path
+    field: Cert
+    name: BASE_SECRET
+
+  - name: ENV_TEST
+    value: should_be_overwritten
+
+---
+base_path: /
+type: container
+vars:
+
+  - path: different_path
+    field: Cert
+    name: BASE_SECRET
+
+  - name: ENV_TEST
+    value: should_be_overwritten

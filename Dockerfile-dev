@@ -1,0 +1,16 @@
+FROM       golang:1.12-alpine
+
+# install runtime scripts
+ADD . $GOPATH/src/git.corp.adobe.com/EchoSign/porter2k8s
+
+WORKDIR $GOPATH/src/git.corp.adobe.com/EchoSign/porter2k8s
+
+RUN apk add --no-cache \
+      bash \
+      build-base \
+      make \
+      git \
+      coreutils \
+      && make install-tools
+
+CMD /bin/bash

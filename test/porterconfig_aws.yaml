@@ -1,0 +1,25 @@
+--- # first document defines the bundle
+bundle: global
+
+---
+# Microservices Secrets
+group: 1
+base_path: /
+packages:
+  host:
+
+    - path: not_relevant
+      field: irrelevant_field
+      name: irrelevant_name
+
+    - name: BUG
+      value: Bug
+
+  container:
+    - path: aws_secret_path
+      field: aws_field
+      name: AWS_SECRET
+
+    - name: AWS_ENV
+      value: aws_environment_variable
+

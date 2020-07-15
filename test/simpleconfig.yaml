@@ -1,0 +1,47 @@
+--- # first document defines the bundle
+includes:
+  - ./simpleconfig_base.yaml
+  - ./simpleconfig_aws.yaml
+
+---
+base_path: /test_base
+type: container
+vars:
+
+  - name: ENV_TEST
+    value: environment value
+
+  - path: test_path
+    name: SECRET_TEST
+
+  - name: NO_VAL
+    value: ""
+
+  - path: test_path
+    name: NOT_VAULT_KEY
+    key: vault_key
+
+  - source: kubernetes
+    name: FROM_K8S
+    k8s_secret: k8s-secret
+    key: k8s_key
+
+---
+base_path: /extra_slash///more_slash/
+type: container
+vars:
+
+  - name: SLASHES
+    path: /another_slash
+
+---
+base_path: /kinda_matters_now
+type: porter2k8s
+vars:
+
+  - name: ENVIRONMENT
+    value: gorilla
+
+  - name: P2K8S_SECRET
+    path: secret_path
+    key: Password

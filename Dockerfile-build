@@ -1,0 +1,10 @@
+FROM docker-dc-micro-release.dr.corp.adobe.com/porter2k8s:base
+
+ARG SHA
+
+COPY . $GOPATH/src/git.corp.adobe.com/EchoSign/porter2k8s
+
+WORKDIR $GOPATH/src/git.corp.adobe.com/EchoSign/porter2k8s
+
+RUN make install-tools \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.GitSha=$SHA -X main.Version=`cat VERSION` -X main.BuildDate=`date +%s`" -o porter2k8s cmd/porter2k8s/porter2k8s.go

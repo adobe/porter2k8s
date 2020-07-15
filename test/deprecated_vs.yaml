@@ -1,0 +1,20 @@
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: &name daedalus
+spec:
+  hosts:
+  - daedalus.dev0.lan
+  gateways:
+  - my-gateway
+  http:
+    - timeout: 15s # Total request time, including retries. Make sure this makes sense for your service!
+      route:
+      - destination:
+          host: *name
+          port:
+            number: 80
+      retries:
+        attempts: 3
+        perTryTimeout: 15s # Timeout for receiving response headers on retry.

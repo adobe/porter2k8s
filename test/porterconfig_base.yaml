@@ -1,0 +1,19 @@
+--- # first document defines the bundle
+bundle: global
+
+---
+# Microservices Secrets
+group: 1
+base_path: /
+packages:
+  something: &test
+
+    - path: different_path
+      field: Cert
+      name: BASE_SECRET
+
+    - name: ENV_TEST
+      value: should_be_overwritten
+
+  container: *test
+
