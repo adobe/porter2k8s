@@ -18,7 +18,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var simpleTestFiles = []string{"./test/simpleconfig.yaml"}
+var simpleTestFiles = []string{"../../test/simpleconfig.yaml"}
 
 var simpleVaultPath = "/secret/vault"
 
@@ -64,6 +64,15 @@ var simpleExpectedReaderValues = map[string]SimpleEntry{
 		K8sSecret: "k8s-secret",
 		Source:    "kubernetes",
 		Key:       "k8s_key",
+	},
+	"FROM_OBJECT": {
+		Name: "FROM_OBJECT",
+		K8sObject: K8sObjectRef{
+			Name: "test_object",
+			Kind: "redis",
+		},
+		Source: "object",
+		Path:   "status.url",
 	},
 	"ENVIRONMENT": {
 		Name:  "ENVIRONMENT",
@@ -129,6 +138,11 @@ var simpleExpectedRegionSecretKeyRefs = map[string]SecretKeyRef{
 		Name:   "FROM_K8S",
 		Key:    "k8s_key",
 		Secret: "k8s-secret",
+	},
+	"FROM_OBJECT": {
+		Name:   "FROM_OBJECT",
+		Key:    "status.url",
+		Secret: "test-object-redis",
 	},
 }
 
@@ -200,6 +214,7 @@ func TestSimpleParse(t *testing.T) {
 					VaultBasePath: simpleVaultPath,
 				},
 				ClusterSettings: map[string]string{},
+				ObjectRefs:      map[string][]string{},
 			}
 			simpleConfig := &SimpleEnv{}
 			// Use output of first test. Probably not a great practice.

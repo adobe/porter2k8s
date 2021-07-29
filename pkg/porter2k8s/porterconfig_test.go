@@ -18,7 +18,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var testFiles = []string{"./test/porterconfig.yaml"}
+var testFiles = []string{"../../test/porterconfig.yaml"}
 
 var vaultPath = "/secret/vault"
 

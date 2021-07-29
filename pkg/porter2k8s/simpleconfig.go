@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
@@ -25,26 +26,52 @@ import (
 
 // SimpleEnv contains the env variables, and secrets for a specific region.
 type SimpleEnv struct {
-	Errors     []error
 	EnvConfigs []SimpleSecretYaml
+	Errors     []error
 }
 
 // SimpleEntry in a simple config secret yaml.
 type SimpleEntry struct {
-	Path      string `yaml:"path"`
-	Name      string `yaml:"name"`
-	Value     string `yaml:"value"`
-	Key       string `yaml:"key"`
-	Source    string `yaml:"source"`
-	K8sSecret string `yaml:"k8s_secret"`
+	K8sObject K8sObjectRef `yaml:"k8s_object"`
+	K8sSecret string       `yaml:"k8s_secret"`
+	Key       string       `yaml:"key"`
+	Name      string       `yaml:"name"`
+	Path      string       `yaml:"path"`
+	Source    SourceType   `yaml:"source"`
+	Value     string       `yaml:"value"`
 }
 
 // SimpleSecretYaml contains the format of a Simple secret yaml file.  It is used for unmarshalling json.
 type SimpleSecretYaml struct {
-	Includes []string      `yaml:"includes"`
 	BasePath string        `yaml:"base_path"`
-	Type     string        `yaml:"type"`
+	Includes []string      `yaml:"includes"`
+	Type     EntryType     `yaml:"type"`
 	Vars     []SimpleEntry `yaml:"vars"`
+}
+
+// EntryType determines if the variable is for the container or porter2k8s templating.
+type EntryType string
+
+// Possible EntryType values.
+const (
+	ContainerType EntryType = "container"
+	PorterType    EntryType = "porter2k8s" // Old name for porter2ks8 type.
+)
+
+// SourceType determines the source of a secret.
+type SourceType string
+
+// Secrets can come from vault, K8s secrets such as those created by the ASO, or Kubernetes objects.
+const (
+	K8sObjectSource SourceType = "object"
+	K8sSecretSource SourceType = "kubernetes"
+	VaultSource     SourceType = "vault"
+)
+
+// K8sObjectRef specifies the field of a Kubernetes object to retrieve.
+type K8sObjectRef struct {
+	Kind string `yaml:"kind"`
+	Name string `yaml:"name"`
 }
 
 // getEnv implements configReader interface
@@ -65,35 +92,72 @@ func (simpleEnv *SimpleEnv) getEnv(environment *RegionEnv) {
 func (simpleEnv *SimpleEnv) parse(environment *RegionEnv) {
 	// Segregate secret references from plain environment variables.
 	for _, config := range simpleEnv.EnvConfigs {
-		for _, entry := range config.Vars {
-			// Only 2 types are porter2k8s and container. Both can contain k/v pairs or secrets
-			// Environment variables have a value, secrets do not.
-			if entry.Value != "" {
-				if config.Type == "porter2k8s" {
+		switch config.Type {
+		case PorterType:
+			for _, entry := range config.Vars {
+				if entry.Value != "" {
 					environment.ClusterSettings[entry.Name] = entry.Value
-				} else if config.Type == "container" {
-					newEnvVar := EnvVar{Name: entry.Name, Value: entry.Value}
-					environment.Vars = append(environment.Vars, newEnvVar)
+				} else {
+					entry.processSecret(environment, config)
 				}
-				// Container secrets injected from Kubernetes Secret objects (e.g., from OSB service bindings)
-			} else if entry.Source == "kubernetes" {
-				newSecretRef := SecretKeyRef{Name: entry.Name, Key: entry.Key, Secret: entry.K8sSecret}
-				environment.SecretKeyRefs = append(environment.SecretKeyRefs, newSecretRef)
-			} else {
-				// Secrets.
-				// Combine base path with path of secret.
-				path := environment.Cfg.VaultBasePath + "/" + config.BasePath
-				if entry.Path != "" {
-					path = path + "/" + entry.Path
+			}
+		case ContainerType:
+			for _, entry := range config.Vars {
+				//log.Debugf("Entry: %+v", entry)
+				switch entry.Source {
+				case VaultSource:
+					// Environment variables have a value, secrets do not.
+					if entry.Value != "" {
+						newEnvVar := EnvVar{Name: entry.Name, Value: entry.Value}
+						environment.Vars = append(environment.Vars, newEnvVar)
+					} else {
+						entry.processSecret(environment, config)
+					}
+				case K8sSecretSource:
+					// Container secrets injected from Kubernetes Secrets (e.g. from OSB service bindings)
+					newSecretRef := SecretKeyRef{Name: entry.Name, Key: entry.Key, Secret: entry.K8sSecret}
+					environment.SecretKeyRefs = append(environment.SecretKeyRefs, newSecretRef)
+				case K8sObjectSource:
+					// Container secrets injected from Kubernetes objects (e.g. from ACK objects)
+					//The name of this secret will be `<object_name>-<object_kind` and the key will be the path.
+					log.Infof("K8s Object %+v", entry.K8sObject)
+					secretName := strings.ToLower(fmt.Sprintf("%s-%s", entry.K8sObject.Name, entry.K8sObject.Kind))
+					log.Infof("Secret Name %s", secretName)
+
+					key := removeInvalidCharacters(entry.Path)
+					newSecretRef := SecretKeyRef{Name: entry.Name, Key: key, Secret: secretName}
+					environment.SecretKeyRefs = append(environment.SecretKeyRefs, newSecretRef)
+					// name_kind: [path1, path2,...]
+					environment.ObjectRefs[secretName] = append(environment.ObjectRefs[secretName], entry.Path)
 				}
-				// Remove duplicate slashes.
-				regex, _ := regexp.Compile(`//+`)
-				path = regex.ReplaceAllString(path, "/")
-				newSecret := SecretRef{Name: entry.Name, Path: path, Key: entry.Key, Kind: config.Type}
-				environment.Secrets = append(environment.Secrets, newSecret)
 			}
 		}
 	}
+}
+
+// UnmarshalYAML sets default Source to "vault".
+func (entry *SimpleEntry) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawSimpleEntry SimpleEntry
+	raw := rawSimpleEntry{Source: VaultSource}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	*entry = SimpleEntry(raw)
+	return nil
+}
+
+func (entry *SimpleEntry) processSecret(environment *RegionEnv, config SimpleSecretYaml) {
+	// Combine base path with path of secret.
+	path := environment.Cfg.VaultBasePath + "/" + config.BasePath
+	if entry.Path != "" {
+		path = path + "/" + entry.Path
+	}
+	// Remove duplicate slashes.
+	regex, _ := regexp.Compile(`//+`)
+	path = regex.ReplaceAllString(path, "/")
+	newSecret := SecretRef{Name: entry.Name, Path: path, Key: entry.Key, Kind: config.Type}
+	environment.Secrets = append(environment.Secrets, newSecret)
 }
 
 // getSimpleEnv unmarshals environment yaml files into environment variables and secrets.
@@ -130,18 +194,19 @@ func (simpleEnv *SimpleEnv) getSimpleEnv(files []string, overridden map[string]b
 			}
 			// Filter out yaml documents without container env variables or secrets.
 			// We are only interested in container secrets.
-			if len(simpleSecretConfig.Vars) > 0 &&
-				(simpleSecretConfig.Type == "container" || simpleSecretConfig.Type == "porter2k8s") {
+			if len(simpleSecretConfig.Vars) > 0 && (simpleSecretConfig.Type == ContainerType ||
+				simpleSecretConfig.Type == PorterType) {
 				// Env variables and secrets should override those in the referenced yaml files.
 				// This allows setting a value for a specific cluster and allowing all other clusters to share defaults.
 				// Remove entries that are overridden or add them to the override map.
 				// DO NOT HAVE THE SAME ENTRY IN TWO SIMULTANEOUSLY REFERENCED FILES!!!
 				for i := len(simpleSecretConfig.Vars) - 1; i >= 0; i-- {
-					if _, ok := overridden[simpleSecretConfig.Vars[i].Name]; ok {
+					overrideEntry := fmt.Sprintf("%s_%s", simpleSecretConfig.Vars[i].Name, simpleSecretConfig.Type)
+					if _, ok := overridden[overrideEntry]; ok {
 						log.Infof("Env variable %s, overridden\n", simpleSecretConfig.Vars[i].Name)
 						simpleSecretConfig.Vars = append(simpleSecretConfig.Vars[:i], simpleSecretConfig.Vars[i+1:]...)
 					} else {
-						overridden[simpleSecretConfig.Vars[i].Name] = true
+						overridden[overrideEntry] = true
 					}
 				}
 				simpleEnv.EnvConfigs = append(simpleEnv.EnvConfigs, simpleSecretConfig)
@@ -160,7 +225,9 @@ func (simpleEnv *SimpleEnv) getSimpleEnv(files []string, overridden map[string]b
 		// Recurse on referenced yaml files.
 		if depth < maxDepth {
 			depth++
-			log.Infof("Recursing on files: %s\n", referencedFiles)
+			if len(referencedFiles) > 0 {
+				log.Infof("Recursing on files: %s\n", referencedFiles)
+			}
 			referencedSimpleEnv := &SimpleEnv{}
 			referencedSimpleEnv.getSimpleEnv(referencedFiles, overridden, depth)
 			simpleEnv.EnvConfigs = append(simpleEnv.EnvConfigs, referencedSimpleEnv.EnvConfigs...)

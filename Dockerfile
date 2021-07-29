@@ -1,4 +1,4 @@
-From alpine
+From docker-hub-remote.dr.corp.adobe.com/alpine
 
 ADD porter2k8s /usr/local/bin/porter2k8s
 

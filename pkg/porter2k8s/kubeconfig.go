@@ -17,8 +17,9 @@ import (
 	"fmt"
 	"io/ioutil"
 
+	"git.corp.adobe.com/EchoSign/porter2k8s/pkg/vault"
+
 	"github.com/ghodss/yaml"
-	vaultapi "github.com/hashicorp/vault/api"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -49,18 +50,23 @@ func readReferences(fileName string) (ClusterConfigs, error) {
 }
 
 // fetchConfigs fetches configs from vault.
-func (clusterConfigs *ClusterConfigs) fetchConfigs(client *vaultapi.Client) error {
+func (clusterConfigs *ClusterConfigs) fetchConfigs(client vault.VaultClientInterface) error {
 	clusters := make(map[string]*restclient.Config)
 	for _, clusterConfig := range clusterConfigs.Clusters {
-		vaultSecret, err := client.Logical().Read(clusterConfig.VaultPath)
+		vaultSecret, err := client.Read(clusterConfig.VaultPath)
 		if err != nil {
 			return err
 		}
 
-		encodedConfigValue, ok := vaultSecret.Data["config"]
+		if vaultSecret == nil {
+			return fmt.Errorf("Vault secret not found for %s", clusterConfig.VaultPath)
+		}
+
+		encodedConfigValue, ok := vaultSecret["config"]
 		if !ok {
 			return fmt.Errorf("kubeconfig not found at location %s", clusterConfig.VaultPath)
 		}
+
 		encodedConfig, ok := encodedConfigValue.(string)
 		if !ok {
 			return fmt.Errorf("unable to assert Kubeconfig encoding to string \n%s", encodedConfigValue)

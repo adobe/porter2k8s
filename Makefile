@@ -26,9 +26,6 @@ upload-current:
 	docker tag $(REPO):latest $(REPO):$(VERSION)
 	docker push $(REPO):$(VERSION)
 
-install-tools:
-	@which curl || apk add --no-cache curl
-
 run-tests:
 	docker build --pull -t $(REPO):build . -f Dockerfile-build
 	docker run $(REPO):build go test -v ./...

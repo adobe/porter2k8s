@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,7 +32,7 @@ type PodLogSinker interface {
 	SinkForPod(podname string) (io.WriteCloser, error)
 }
 
-// StreamPodLogs starts watching for pods inside the K8s cluster and streaming log data to specified destination.
+// streamPodLogs starts watching for pods inside the K8s cluster and streaming log data to specified destination.
 // Logs are retrieved for any pod matching the specified selector and that is not in phase 'pending'.
 //
 // ctx - context to cancel/timeout all operations
@@ -39,27 +40,24 @@ type PodLogSinker interface {
 // podselector - selector string for pod search
 // containerName - container to retrieve logs from
 // logDestination - callback for providing the log stream destination for a pod
-func StreamPodLogs(
+func streamPodLogs(
 	ctx context.Context,
 	client corev1.PodInterface,
 	podselector string,
 	containerName string,
 	logDestination PodLogSinker) (*PodLogStreaming, error) {
-	if logDestination == nil {
-		return nil, nil
-	}
 
 	options := metav1.ListOptions{
 		LabelSelector: podselector,
 		FieldSelector: "status.phase!=Pending,status.phase!=Unknown",
 	}
-	watcher, err := client.Watch(options)
+	watcher, err := client.Watch(ctx, options)
 	if err != nil {
 		return nil, err
 	}
 
 	// query and attach to pod logs in the background
-	ctx, cancel := context.WithCancel(ctx)
+	logCtx, cancel := context.WithCancel(ctx)
 	p := PodLogStreaming{watcher: watcher, cancel: cancel}
 	p.group.Add(1)
 	go func() {
@@ -68,7 +66,7 @@ func StreamPodLogs(
 		watchCh := watcher.ResultChan()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-logCtx.Done():
 				return
 
 			case event, ok := <-watchCh:
@@ -90,7 +88,7 @@ func StreamPodLogs(
 
 						log.Infof("Retrieving logs for pod %s", podname)
 
-						err := attachToPod(ctx, podname, containerName, client, logDestination)
+						err := attachToPod(logCtx, podname, containerName, client, logDestination)
 						switch err {
 						case nil, io.EOF:
 							log.Infof("End of logs for pod %s", podname)
@@ -134,12 +132,13 @@ func (p *PodLogStreaming) Stop(gracePeriod time.Duration) bool {
 }
 
 func attachToPod(
-	ctx context.Context, podname string, containerName string, client corev1.PodInterface, sinker PodLogSinker) error {
+	ctx context.Context, podname string, containerName string, client corev1.PodInterface, sinker PodLogSinker,
+) error {
 	podLogOptions := apiv1.PodLogOptions{
 		Container: containerName,
 		Follow:    true,
 	}
-	src, err := client.GetLogs(podname, &podLogOptions).Context(ctx).Stream()
+	src, err := client.GetLogs(podname, &podLogOptions).Stream(ctx)
 	if err != nil {
 		return err
 	}
@@ -174,6 +173,21 @@ func LogrusSink() PodLogSinker {
 	return sinkForPodFunc(func(podname string) (io.WriteCloser, error) {
 		return prefixedWriter(log.StandardLogger().Writer(), fmt.Sprintf("[%s]", podname)), nil
 	})
+}
+
+// NullLogSink sends to /dev/null
+func NullLogSink() PodLogSinker {
+	return sinkForPodFunc(func(podname string) (io.WriteCloser, error) {
+		return nopWriterCloser{Writer: ioutil.Discard}, nil
+	})
+}
+
+type nopWriterCloser struct {
+	io.Writer
+}
+
+func (nopWriterCloser) Close() error {
+	return nil
 }
 
 type sinkForPodFunc func(podname string) (io.WriteCloser, error)

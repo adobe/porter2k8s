@@ -25,25 +25,26 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	vaultapi "github.com/hashicorp/vault/api"
-	catalogv1beta1 "github.com/kubernetes-sigs/service-catalog/pkg/apis/servicecatalog/v1beta1"
-	catalogclientset "github.com/kubernetes-sigs/service-catalog/pkg/client/clientset_generated/clientset"
-	contourv1beta1 "github.com/projectcontour/contour/apis/contour/v1beta1"
-	contourversioned "github.com/projectcontour/contour/apis/generated/clientset/versioned"
+	"git.corp.adobe.com/EchoSign/porter2k8s/pkg/vault"
+
 	log "github.com/sirupsen/logrus"
-	istioversioned "istio.io/client-go/pkg/clientset/versioned"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -54,19 +55,22 @@ type CmdConfig struct {
 	ConfigPath          string
 	ConfigType          string // Porter or Simple
 	Environment         string
+	DynamicParallel     bool
+	LogDir              string
+	LogMode             string
+	LogOnce             sync.Once
 	MaxConfigMaps       int
 	Namespace           string
+	PodLogSinker        PodLogSinker
 	Regions             string
-	SecretPathWhiteList string
 	SHA                 string
+	SecretPathWhiteList string
 	VaultAddress        string
 	VaultBasePath       string // Vault base path for secrets.
 	VaultToken          string
+	VaultNamespace      string
 	Verbose             bool
 	Wait                int
-	LogMode             string
-	LogDir              string
-	PodLogSinker        PodLogSinker
 }
 
 // SecretRef is a reference to an individual secret in Vault.
@@ -75,7 +79,7 @@ type SecretRef struct {
 	Name  string
 	Path  string
 	Value string
-	Kind  string
+	Kind  EntryType
 }
 
 // SecretKeyRef is a reference to a key within a Kubernetes secret.
@@ -97,7 +101,7 @@ type configReader interface {
 }
 
 // UpdateFn is a function that can update a single type of Kubernetes object in multiple clusters.
-type UpdateFn func(chan interface{}, *sync.WaitGroup, *RegionEnv, chan *RegionEnv)
+type UpdateFn func(*sync.WaitGroup, *RegionEnv, chan *RegionEnv)
 
 // Run is the main function.
 func Run(args []string) {
@@ -150,25 +154,13 @@ func Run(args []string) {
 
 	// Run and monitor updates in this order.
 	updateFns := []UpdateFn{
-		updateConfigMapRegion,
-		updateServiceRegion,
-		updateServiceAccountRegion,
-		updateIngressRegion,
-		updateIngressRouteRegion,
-		updateGatewayRegion,
-		updateVirtualServiceRegion,
-		updateServiceInstanceRegion,
-		updateServiceBindingRegion,
-		updateNamedSecretsRegion,
-		updateDeploymentRegion,
-		updateJobRegion,
-		updateHPAutoscalerRegion,
-		updatePodDisruptionBudgetRegion,
+		updateDynamicServiceRegion,
+		updatePodObjectRegion,
 	}
 	for _, updateFn := range updateFns {
 		err := runUpdate(regionEnvs, updateFn)
 		if err != nil {
-			log.Errorf("%s", err)
+			log.Error(err)
 			os.Exit(2)
 		}
 	}
@@ -178,14 +170,9 @@ func Run(args []string) {
 func getServiceConfig(cfg *CmdConfig) (KubeObjects, error) {
 	// Intialize KubeObjects
 	var kubeObjects KubeObjects
-	kubeObjects.ServiceInstances = make(map[string][]*catalogv1beta1.ServiceInstance)
-	kubeObjects.ServiceBindings = make(map[string][]*catalogv1beta1.ServiceBinding)
-	kubeObjects.IngressRouteList = new(contourv1beta1.IngressRouteList)
-	kubeObjects.NamedSecrets = new(v1.SecretList)
+	kubeObjects.Unstructured = make(map[string][]*unstructured.Unstructured)
 
-	// Allowed names for kubernetes object files are deployment.yaml, service.yaml, and ingress.yaml,
-	// or their environment specific variations.
-	// Istio CustomResourceDefinitions should be in istio.yaml or the environment specific variation.
+	// Objects of all types are parsed from these files, they need not match the name.
 	possibleFiles := []string{
 		"deployment",
 		"service",
@@ -198,6 +185,7 @@ func getServiceConfig(cfg *CmdConfig) (KubeObjects, error) {
 		"hpa",
 		"pdb",
 		"secret",
+		"service-operator",
 	}
 
 	// Pull down kube configs from Vault.
@@ -215,7 +203,7 @@ func getServiceConfig(cfg *CmdConfig) (KubeObjects, error) {
 		return kubeObjects, validationErr
 	}
 
-	deploymentErr := prepareDeployment(kubeObjects.parentObject(), cfg.SHA)
+	deploymentErr := kubeObjects.prepareDeployment(cfg.SHA)
 	return kubeObjects, deploymentErr
 }
 
@@ -242,15 +230,13 @@ func getConfig(ctx context.Context, cfg *CmdConfig) <-chan *RegionEnv {
 		defer close(envStream)
 
 		for _, region := range strings.Fields(cfg.Regions) {
-			serviceInstances := make(map[string][]*catalogv1beta1.ServiceInstance)
-			serviceBindings := make(map[string][]*catalogv1beta1.ServiceBinding)
+			logger := log.WithFields(log.Fields{"Region": region})
 			// Create an environment for this region and populate it with information from the config files.
 			environment := RegionEnv{
-				Region:           region,
-				Cfg:              cfg,
-				Context:          ctx,
-				ServiceInstances: serviceInstances,
-				ServiceBindings:  serviceBindings,
+				Region:  region,
+				Cfg:     cfg,
+				Context: ctx,
+				Logger:  logger,
 			}
 
 			reader, readerError := getReader(cfg.ConfigType)
@@ -262,6 +248,7 @@ func getConfig(ctx context.Context, cfg *CmdConfig) <-chan *RegionEnv {
 
 			// getEnv adds values for the deployment specific configmap and secret.
 			environment.ClusterSettings = map[string]string{}
+			environment.ObjectRefs = map[string][]string{}
 			reader.getEnv(&environment)
 			reader.parse(&environment)
 			environment.identifySecrets()
@@ -284,7 +271,7 @@ func fetchSecrets(regionEnvStream <-chan *RegionEnv) <-chan *RegionEnv {
 	go func() {
 		defer log.Debug("Closing fetchSecrets channel")
 		defer close(envWithSecretsStream)
-		var client *vaultapi.Client
+		var client vault.VaultClientInterface
 		var clientErr error
 		// Cache secrets. Map of vaultapi.Secret.Data.
 		secretCache := make(map[string]map[string]interface{})
@@ -296,13 +283,14 @@ func fetchSecrets(regionEnvStream <-chan *RegionEnv) <-chan *RegionEnv {
 			}
 
 			if client == nil {
-				client, clientErr = newVaultClient(regionEnv.Cfg.VaultAddress, regionEnv.Cfg.VaultToken)
+				client, clientErr = vault.NewVaultClient(
+					regionEnv.Cfg.VaultAddress,
+					regionEnv.Cfg.VaultNamespace,
+					regionEnv.Cfg.VaultToken,
+				)
 			}
 			if clientErr != nil {
-				regionEnv.Errors = append(regionEnv.Errors, fmt.Errorf(
-					"vault client initialization error %s",
-					clientErr,
-				))
+				regionEnv.errf("vault client initialization error %s", clientErr)
 				envWithSecretsStream <- regionEnv
 				return
 			}
@@ -315,34 +303,20 @@ func fetchSecrets(regionEnvStream <-chan *RegionEnv) <-chan *RegionEnv {
 				}
 				vaultSecretData, ok := secretCache[secret.Path]
 				if !ok {
-					vaultSecret, readErr := client.Logical().Read(secret.Path)
+					vaultSecret, readErr := client.Read(secret.Path)
 					if readErr != nil {
-						newErr := fmt.Errorf(
-							"unable to retrieve secrets for region %s\n%v", regionEnv.Region,
-							readErr,
-						)
-						regionEnv.Errors = append(regionEnv.Errors, newErr)
+						regionEnv.errf("unable to retrieve secrets for region %s\n%v", regionEnv.Region, readErr)
 						continue
 					}
-					if vaultSecret == nil || vaultSecret.Data[secret.Key] == nil {
-						newErr := fmt.Errorf(
-							"vault path %s is valid but value for %s was not found",
-							secret.Path,
-							secret.Key,
-						)
-						regionEnv.Errors = append(regionEnv.Errors, newErr)
+					if vaultSecret == nil || vaultSecret[secret.Key] == nil {
+						regionEnv.errf("vault path %s is valid but value for %s was not found", secret.Path, secret.Key)
 						continue
 					}
-					vaultSecretData = vaultSecret.Data
+					vaultSecretData = vaultSecret
 				}
 				// Catch keys which do not exist in cache.
 				if vaultSecretData[secret.Key] == nil {
-					newErr := fmt.Errorf(
-						"vault path %s is valid but value for %s was not found",
-						secret.Path,
-						secret.Key,
-					)
-					regionEnv.Errors = append(regionEnv.Errors, newErr)
+					regionEnv.errf("vault path %s is valid but value for %s was not found", secret.Path, secret.Key)
 					continue
 				}
 				secret.Value = vaultSecretData[secret.Key].(string)
@@ -369,7 +343,7 @@ func createEnv(kubeServiceConfig KubeObjects, regionEnvStream <-chan *RegionEnv)
 	envKubernetesStream := make(chan *RegionEnv)
 	// The secrets and config map take their name from the deployment.
 	//deployment := kubeServiceConfig.Deployment.(*appsv1.Deployment)
-	deploymentName := kubeServiceConfig.parentObject().GetName()
+	deploymentName := kubeServiceConfig.PodObject.GetName()
 	go func() {
 		defer log.Debug("Closing createEnv channel")
 		defer close(envKubernetesStream)
@@ -408,12 +382,7 @@ func createEnv(kubeServiceConfig KubeObjects, regionEnvStream <-chan *RegionEnv)
 				ok := false
 				clientConfig, ok = kubeServiceConfig.ClusterConfigs.RegionMap[regionEnv.Region]
 				if !ok {
-					kubeConfigErr = fmt.Errorf(
-						"config for region %s not found in %s",
-						regionEnv.Region,
-						clusterConfigFile,
-					)
-					regionEnv.Errors = append(regionEnv.Errors, kubeConfigErr)
+					regionEnv.errf("config for region %s not found in %s", regionEnv.Region, clusterConfigFile)
 					envKubernetesStream <- regionEnv
 					log.Info("Exiting on missing config in vault.")
 					return
@@ -428,30 +397,22 @@ func createEnv(kubeServiceConfig KubeObjects, regionEnvStream <-chan *RegionEnv)
 				return
 			}
 			regionEnv.Clientset = clientset
-			istioClientset, clientsetErr := istioversioned.NewForConfig(clientConfig)
-			if clientsetErr != nil {
-				regionEnv.Errors = append(regionEnv.Errors, clientsetErr)
+			dynamic, dynamicErr := dynamic.NewForConfig(clientConfig)
+			if dynamicErr != nil {
+				regionEnv.Errors = append(regionEnv.Errors, dynamicErr)
 				envKubernetesStream <- regionEnv
-				log.Info("Exiting on istio clientset creation error.")
+				log.Info("Exiting on dynamic client creation error.")
 				return
 			}
-			regionEnv.IstioClientset = istioClientset
-			catalogClientset, clientsetErr := catalogclientset.NewForConfig(clientConfig)
-			if clientsetErr != nil {
-				regionEnv.Errors = append(regionEnv.Errors, clientsetErr)
+			regionEnv.DynamicClient = dynamic
+			discoveryClient, discoveryErr := discovery.NewDiscoveryClientForConfig(clientConfig)
+			if discoveryErr != nil {
+				regionEnv.Errors = append(regionEnv.Errors, discoveryErr)
 				envKubernetesStream <- regionEnv
-				log.Info("Exiting on catalog clientset creation error.")
+				log.Info("Exiting on discovery client creation error.")
 				return
 			}
-			regionEnv.CatalogClientset = catalogClientset
-			contourClientset, clientsetErr := contourversioned.NewForConfig(clientConfig)
-			if clientsetErr != nil {
-				regionEnv.Errors = append(regionEnv.Errors, clientsetErr)
-				envKubernetesStream <- regionEnv
-				log.Info("Exiting on contour clientset creation error.")
-				return
-			}
-			regionEnv.ContourClientset = contourClientset
+			regionEnv.Mapper = restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
 
 			// Retrieve cluster specific porter2k8s settings from "porter2k8s" configmap.
 			regionEnv.porter2k8sConfigMap()
@@ -459,52 +420,21 @@ func createEnv(kubeServiceConfig KubeObjects, regionEnvStream <-chan *RegionEnv)
 
 			// Load regionEnv.Secrets of Kind "porter2k8s" into the region's cluster settings
 			for _, secret := range regionEnv.Secrets {
-				if secret.Kind == "porter2k8s" {
+				if secret.Kind == PorterType {
 					regionEnv.ClusterSettings[secret.Name] = secret.Value
-				}
-			}
-
-			// Inject the logging sidecar if necessary before it gets copied to the regions
-			if loggingSidecarInjectionRequired(regionEnv.ClusterSettings) {
-				loggingSidecarInjectionSucceeded := regionEnv.addLoggingSidecarContainer(kubeServiceConfig)
-				if !loggingSidecarInjectionSucceeded {
-					envKubernetesStream <- regionEnv
-					log.Info("Exiting on logging sidecar injection error.")
-					return
 				}
 			}
 
 			// Each RegionEnv needs its own copy of the kubernetes objects, since they are modified with region
 			// specific settings.
-			regionEnv.ConfigMap = kubeServiceConfig.ConfigMap.DeepCopy()
-			regionEnv.Deployment = kubeServiceConfig.Deployment.DeepCopy()
-			regionEnv.Job = kubeServiceConfig.Job.DeepCopy()
-			regionEnv.Gateway = kubeServiceConfig.Gateway.DeepCopy()
-			regionEnv.HPAutoscaler = kubeServiceConfig.HPAutoscaler.DeepCopy()
-			regionEnv.Ingress = kubeServiceConfig.Ingress.DeepCopy()
-			regionEnv.PodDisruptionBudget = kubeServiceConfig.PodDisruptionBudget.DeepCopy()
-			regionEnv.Service = kubeServiceConfig.Service.DeepCopy()
-			regionEnv.ServiceAccount = kubeServiceConfig.ServiceAccount.DeepCopy()
-			regionEnv.VirtualService = kubeServiceConfig.VirtualService.DeepCopy()
-			regionEnv.IngressRouteList = kubeServiceConfig.IngressRouteList.DeepCopy()
-			regionEnv.NamedSecrets = kubeServiceConfig.NamedSecrets.DeepCopy()
+			regionEnv.PodObject = kubeServiceConfig.PodObject.DeepCopy()
 
-			// More than one service instance or binding are allowed.
-			for cloudKey, serviceInstances := range kubeServiceConfig.ServiceInstances {
-				for _, serviceInstance := range serviceInstances {
-					regionEnv.ServiceInstances[cloudKey] = append(
-						regionEnv.ServiceInstances[cloudKey],
-						serviceInstance.DeepCopy(),
-					)
-				}
-			}
-			for cloudKey, serviceBindings := range kubeServiceConfig.ServiceBindings {
-				for _, serviceBinding := range serviceBindings {
-					regionEnv.ServiceBindings[cloudKey] = append(
-						regionEnv.ServiceBindings[cloudKey],
-						serviceBinding.DeepCopy(),
-					)
-				}
+			dynamicObjects := append(
+				kubeServiceConfig.Unstructured["all"],
+				kubeServiceConfig.Unstructured[regionEnv.ClusterSettings["CLOUD"]]...,
+			)
+			for _, dynamicObject := range dynamicObjects {
+				regionEnv.Unstructured = append(regionEnv.Unstructured, dynamicObject.DeepCopy())
 			}
 
 			configMapCreateSucceeded := regionEnv.createConfigMap(deploymentName)
@@ -555,16 +485,19 @@ func flagSet(name string, cfg *CmdConfig) *flag.FlagSet {
 		"Vault server.")
 	flags.StringVar(&cfg.VaultBasePath, "vault-path", setFromEnvStr("VAULT_PATH", "/"), "Path in Vault.")
 	flags.StringVar(&cfg.VaultToken, "vault-token", setFromEnvStr("VAULT_TOKEN", ""), "Vault token.")
+	flags.StringVar(&cfg.VaultNamespace, "vault-namespace", setFromEnvStr("VAULT_NAMESPACE", ""), "Vault namespace.")
 	flags.StringVar(&cfg.SecretPathWhiteList, "secret-path-whitelist", setFromEnvStr("SECRET_PATH_WHITELIST", ""), ""+
 		"Multiple Space delimited secret path whitelist allowed")
 	flags.BoolVar(&cfg.Verbose, "v", setFromEnvBool("VERBOSE"), "Verbose log output.")
 	flags.IntVar(&cfg.Wait, "wait", setFromEnvInt("WAIT", 180), "Extra time to wait for deployment to complete in "+
 		"seconds.")
 	flags.StringVar(&cfg.LogMode, "log-mode", setFromEnvStr("LOG_MODE", "inline"), "Pod log streaming mode. "+
-		"One of 'inline' (print to porter2k8s log), 'file' (write to filesystem, see log-dir option), "+
-		"'none' (disable log streaming)")
+		"One of 'inline' (print to STDOUT), 'single' (single region to stdout), "+
+		"'file' (write to filesystem, see log-dir option), 'none' (disable log streaming)")
 	flags.StringVar(&cfg.LogDir, "log-dir", setFromEnvStr("LOG_DIR", "logs"),
 		"Directory to write pod logs into. (must already exist)")
+	flags.BoolVar(&cfg.DynamicParallel, "dynamic-parallel", setFromEnvBool("DYNAMIC_PARALLEL"),
+		"Update Dynamic Objects in parallel.")
 
 	return flags
 }
@@ -595,6 +528,8 @@ func parse(args []string, cfg *CmdConfig) error {
 	switch cfg.LogMode {
 	case "inline":
 		cfg.PodLogSinker = LogrusSink()
+	case "single", "none":
+		cfg.PodLogSinker = NullLogSink()
 	case "file":
 		fileInfo, err := os.Stat(cfg.LogDir)
 		if err == nil && !fileInfo.IsDir() {
@@ -604,8 +539,6 @@ func parse(args []string, cfg *CmdConfig) error {
 			return fmt.Errorf("invalid log-dir: %s (%w)", cfg.LogDir, err)
 		}
 		cfg.PodLogSinker = DirectoryLogSink(cfg.LogDir)
-	case "none":
-		cfg.PodLogSinker = nil
 	default:
 		return fmt.Errorf("invalid log-mode: %s", cfg.LogMode)
 	}
@@ -622,24 +555,53 @@ func usage(writer io.Writer, cfg *CmdConfig) {
 }
 
 // findContainer finds the container in deployment/job that matches the deployment name.
-func findContainer(kubeObject metav1.Object) *v1.Container {
+func findContainer(kubeObject *unstructured.Unstructured) (*v1.Container, metav1.Object) {
 	name := kubeObject.GetName()
-	templateSpec := findPodTemplateSpec(kubeObject)
+	templateSpec, typedObject := findPodTemplateSpecUnstructured(kubeObject)
 
 	// Find container in deployment that matches the deployment name
 	for i, container := range templateSpec.Spec.Containers {
 		if container.Name == name {
-			return &templateSpec.Spec.Containers[i]
+			return &templateSpec.Spec.Containers[i], typedObject
 		}
 	}
-	return nil
+	return nil, nil
 }
 
+// Retrieve Pod spec from either a deployment or a job. Returns typed pod template spec and typed object.
+func findPodTemplateSpecUnstructured(kubeObject *unstructured.Unstructured) (*v1.PodTemplateSpec, metav1.Object) {
+	switch kubeObject.GetKind() {
+	case "Deployment":
+		v := appsv1.Deployment{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(kubeObject.Object, &v); err != nil {
+			return nil, nil
+		}
+		return &v.Spec.Template, &v
+	case "Job":
+		v := batchv1.Job{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(kubeObject.Object, &v); err != nil {
+			return nil, nil
+		}
+		return &v.Spec.Template, &v
+	case "StatefulSet":
+		v := appsv1.StatefulSet{}
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(kubeObject.Object, &v); err != nil {
+			return nil, nil
+		}
+		return &v.Spec.Template, &v
+	default:
+		return nil, nil
+	}
+}
+
+// Retrieve Pod spec from either a deployment or a job.
 func findPodTemplateSpec(kubeObject interface{}) *v1.PodTemplateSpec {
 	switch asserted := kubeObject.(type) {
 	case *appsv1.Deployment:
 		return &asserted.Spec.Template
 	case *batchv1.Job:
+		return &asserted.Spec.Template
+	case *appsv1.StatefulSet:
 		return &asserted.Spec.Template
 	default:
 		return nil
@@ -658,8 +620,8 @@ func buildConfigFromFlags(context, kubeconfigPath string) (*restclient.Config, e
 
 // calculateWatchTimeout calculates timeout for watch channel based on livenessProbe for primary pod container
 // The idea is for porter2k8s to fail if the containers fail to come up healthy.
-func calculateWatchTimeout(deployment *appsv1.Deployment, buffer int32) *int64 {
-	applicationContainer := findContainer(deployment)
+func calculateWatchTimeout(deployment *unstructured.Unstructured, buffer int32) *int64 {
+	applicationContainer, _ := findContainer(deployment)
 	if applicationContainer.LivenessProbe == nil {
 		// Return default if liveness probe was initialized but all values left at defaults, plus buffer.
 		return int64Ref(33 + buffer)
@@ -670,58 +632,4 @@ func calculateWatchTimeout(deployment *appsv1.Deployment, buffer int32) *int64 {
 	period := setIfZeroInt32(applicationContainer.LivenessProbe.PeriodSeconds, 10)
 	failureThreshold := setIfZeroInt32(applicationContainer.LivenessProbe.FailureThreshold, 3)
 	return int64Ref(buffer + initialDelay + failureThreshold*(period+timeout))
-}
-
-// setReplicas sets the number of replicas in the pending deployment to the greater number
-// between the previous and soon to be updated deployment version.
-func setReplicas(pendingDeployment, previousDeployment *appsv1.Deployment) {
-	if pendingDeployment.Spec.Replicas == nil || *previousDeployment.Spec.Replicas > *pendingDeployment.Spec.Replicas {
-		log.Infof("Setting number of replicas to pre-existing value of %d", *previousDeployment.Spec.Replicas)
-		pendingDeployment.Spec.Replicas = previousDeployment.Spec.Replicas
-	}
-}
-
-// prepareDeployment takes the deployment from the yaml file and applies image sha, labels, and configmap and secret
-// references.
-func prepareDeployment(deploymentObj metav1.Object, sha string) error {
-	// Add sha to image, configMapRef, and secretRef
-	// Find container in deployment that matches the deployment name
-	applicationContainer := findContainer(deploymentObj)
-	if applicationContainer == nil {
-		return fmt.Errorf("unable to find application image in deployment spec")
-	}
-
-	// Remove docker tag, if it exists.
-	// The image in the deployment.yaml should not have a tag.
-	shaReplacement := fmt.Sprintf("$1:%s", sha)
-	// Replace everything after the colon, if it exists. See tests for examples.
-	regex := regexp.MustCompile(`(.*?)(:|\z).*`)
-	applicationContainer.Image = regex.ReplaceAllString(applicationContainer.Image, shaReplacement)
-
-	refName := fmt.Sprintf("%s-%s", deploymentObj.GetName(), sha)
-	// Stub out references to configmap and secret ref to be filled out for each region later.
-	envSourceConfigMap := v1.EnvFromSource{
-		ConfigMapRef: &v1.ConfigMapEnvSource{
-			v1.LocalObjectReference{
-				Name: refName,
-			},
-			boolRef(false),
-		},
-	}
-	envSourceSecret := v1.EnvFromSource{
-		SecretRef: &v1.SecretEnvSource{
-			v1.LocalObjectReference{
-				Name: refName,
-			},
-			// Secrets may not be defined.
-			boolRef(true),
-		},
-	}
-	applicationContainer.EnvFrom = append(applicationContainer.EnvFrom, envSourceConfigMap, envSourceSecret)
-
-	// Add sha label to deployment and pod.
-	appendLabel(deploymentObj, "sha", sha)
-	appendLabel(findPodTemplateSpec(deploymentObj), "sha", sha)
-
-	return nil
 }

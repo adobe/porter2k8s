@@ -1,0 +1,129 @@
+apiVersion: apps/v1 # for versions before 1.9.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: &name test
+spec:
+  selector:
+    matchLabels:
+      app: *name
+  template: # create pods using pod definition in this template
+    metadata:
+      labels:
+        app: *name
+    spec:
+      terminationGracePeriodSeconds: 32
+      containers:
+      - name: *name
+        image: myregistry/echosign/test
+        resources:
+          requests:
+            cpu: 0.75
+            memory: 3G
+          limits:
+            cpu: 1
+            memory: 3G
+        ports:
+        - containerPort: 8080
+        lifecyle:
+          preStop:
+            exec:
+              command: ["/bin/bash", "-c", "sleep 30"]
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 6
+        envFrom:
+         - configMapRef:
+             name: cluster
+---
+apiVersion: apps/v1 # for versions before 1.9.0 use apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: &name smart # Must match image name for porter2k8s logic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: *name
+  podManagementPolicy: Parallel
+  template: # create pods using pod definition in this template
+    metadata:
+      labels:
+        app: *name
+      annotations:
+        iam.amazonaws.com/role: arn:aws:iam::{{.ACCOUNT}}:role/recommend-{{.ENVIRONMENT}}-{{.REGION}}
+    spec:
+      terminationGracePeriodSeconds: 32
+      containers:
+      - name: *name
+        image: myregistry/echosign/smart # Registry (up to first '/') is overriden by the cluster.
+        resources:
+          requests:
+            cpu: 4
+            memory: 50G
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 4
+            memory: 50G
+            nvidia.com/gpu: 1
+        ports:
+        - containerPort: 8080
+        lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/bash", "-c", "sleep 30"]
+        livenessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - pgrep "jupyter" > /dev/null || exit 1
+          initialDelaySeconds: 90
+          timeoutSeconds: 1
+          periodSeconds: 10
+          failureThreshold: 5
+        readinessProbe:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - pgrep "jupyter" > /dev/null || exit 1
+          initialDelaySeconds: 30
+          timeoutSeconds: 30
+          periodSeconds: 10
+          failureThreshold: 5
+        envFrom:
+         - configMapRef:
+             name: cluster
+        volumeMounts:
+          - mountPath: /storage
+            name: smart-storage
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+  volumeClaimTemplates:
+  - metadata:
+      name: smart-storage
+      labels:
+        app: smart
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ebs-sc
+      resources:
+        requests:
+          storage: 2Ti
+

@@ -39,7 +39,7 @@ func TestReadReferences(t *testing.T) {
 		filename string
 		expected ClusterConfigs
 	}{
-		{"test/clusterconfig.yaml", expectedClusterConfig},
+		{"../../test/clusterconfig.yaml", expectedClusterConfig},
 	}
 	for _, tc := range testCases {
 		t.Run(fmt.Sprintf("%+v", tc), func(t *testing.T) {

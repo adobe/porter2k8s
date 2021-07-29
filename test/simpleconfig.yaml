@@ -26,6 +26,13 @@ vars:
     k8s_secret: k8s-secret
     key: k8s_key
 
+  - source: object
+    path: status.url
+    name: FROM_OBJECT
+    k8s_object:
+      name: test-object
+      kind: redis
+
 ---
 base_path: /extra_slash///more_slash/
 type: container
