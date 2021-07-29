@@ -2,19 +2,18 @@
 Deploy projects on Kubernetes.
 
 ## Introduction
-Not everything can run in ETHOS multi-tenant. For those services there was Porter. New developments in managed Kubernetes from IAAS providers promise the efficiency of container orchestration with low operational overhead. Porter2k8s parses a Porter configuration and deploys to kubernetes.  In the future Porter2k8s also supports more simplified configuration for newer services.
+Porter2k8s parses a configuration and deploys to kubernetes.
 
 ## Goals
-1. Keep the advantages of Porter.
-   1. Environment variables and secrets are tied to a deployment.
-   2. Multi-region deployments.
-   3. No reonboarding required.  Add new secrets, environment variables, regions, environments with only approved pull requests.
-   4. No intermediary secret storage.  This reduces the operational overhead, but requires deployments to take place within Adobenet.  Therefore they cannot run in Lambda.
-2. Capitalize on the advantages of Kubernetes.
+1. Versatility
+    1. Environment variables and secrets are tied to a deployment.
+    2. Multi-cluster rollouts.
+    3. No intermediary secret storage.  This reduces the operational overhead, but requires deployments to take place within Adobenet.  Therefore they cannot run in Lambda.
+4. Capitalize on the advantages of Kubernetes.
    1. Deployments will only take a few minutes, rather than hours.
    2. All microservices in the cluster are assumed to be part of the same application, reducing the need for increased security and compliance controls.
    3. Allow developers to define their services and take advantage of all that Kubernetes can do.
-3. As Vanilla as possible
+5. As Vanilla as possible
    1. A single set of YAML files should:
     1. Cover all environments from local to production.
     2. Be compatible with the `kubectl apply`.

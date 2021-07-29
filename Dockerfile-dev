@@ -1,4 +1,4 @@
-FROM       docker-hub-remote.dr.corp.adobe.com/golang:1.12-alpine
+FROM       golang:1.16-alpine
 
 # install runtime scripts
 ADD . $GOPATH/src/git.corp.adobe.com/EchoSign/porter2k8s
